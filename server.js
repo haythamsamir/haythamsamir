@@ -1,5 +1,6 @@
 // server.js — Shopify → WATI WhatsApp integration
-// Deploy on: Railway / Render / Vercel (as serverless) / any Node host
+// Trigger: Fulfillment order transitioned to "On hold" status
+// Deploy on: Railway / Render / any Node host
 // Node >= 18
 
 import express from "express";
@@ -35,9 +36,9 @@ function verifyShopifyHmac(req) {
   return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacHeader));
 }
 
-function isAllowedProvince(shippingAddress) {
-  if (!shippingAddress) return false;
-  const province = (shippingAddress.province || "").trim().toLowerCase();
+function isAllowedProvince(destination) {
+  if (!destination) return false;
+  const province = (destination.province || "").trim().toLowerCase();
   return ALLOWED_PROVINCES.some((allowed) => province.includes(allowed));
 }
 
@@ -53,7 +54,7 @@ async function sendWatiTemplate(phone, templateParams) {
 
   const body = {
     template_name:  CONFIG.WATI_TEMPLATE_NAME,
-    broadcast_name: `shopify_in_progress_${Date.now()}`,
+    broadcast_name: `shopify_on_hold_${Date.now()}`,
     parameters:     templateParams,
   };
 
@@ -85,10 +86,11 @@ app.use(
 
 // ─── WEBHOOK ENDPOINT ─────────────────────────────────────────────────────────
 //
-// Register TWO webhooks in Shopify pointing to this same URL:
-//   1. Fulfillment creation  (fulfillments/create)
-//   2. Fulfillment update    (fulfillments/update)
-//   URL: https://haythamsamir-production.up.railway.app/webhook/fulfillment
+// Register this webhook in Shopify:
+//   Admin → Settings → Notifications → Webhooks → Create webhook
+//   Event:  Fulfillment order transitioned to the "On hold" status
+//   Format: JSON
+//   URL:    https://haythamsamir-production.up.railway.app/webhook/fulfillment
 
 app.post("/webhook/fulfillment", async (req, res) => {
   // 1. Validate HMAC
@@ -100,53 +102,40 @@ app.post("/webhook/fulfillment", async (req, res) => {
   // Acknowledge immediately so Shopify doesn't retry
   res.status(200).send("ok");
 
-  const fulfillment = req.body;
+  const fulfillmentOrder = req.body;
 
   try {
-    // 2. Check fulfillment status
-    const status = (fulfillment.status || "").toLowerCase();
-    if (!["open", "success", "pending"].includes(status)) {
-      console.log(`Skipping — status is "${status}"`);
+    // 2. Get destination (shipping address)
+    const destination = fulfillmentOrder.destination || null;
+
+    // 3. Check Governorate (Province field)
+    if (!isAllowedProvince(destination)) {
+      console.log(`Skipping — province "${destination?.province}" not in allowed list`);
       return;
     }
 
-    // 3. Get shipping address
-    const shippingAddress =
-      fulfillment.destination ||
-      fulfillment.shipping_address ||
-      null;
-
-    // 4. Check Governorate (Province field)
-    if (!isAllowedProvince(shippingAddress)) {
-      console.log(`Skipping — province "${shippingAddress?.province}" not in allowed list`);
-      return;
-    }
-
-    // 5. Get customer phone
-    const rawPhone =
-      shippingAddress?.phone ||
-      fulfillment.destination?.phone ||
-      null;
+    // 4. Get customer phone
+    const rawPhone = destination?.phone || null;
 
     if (!rawPhone) {
-      console.warn(`Order ${fulfillment.order_id} — no phone number found, skipping`);
+      console.warn(`Order ${fulfillmentOrder.order_id} — no phone number found, skipping`);
       return;
     }
 
     const phone = formatEgyptianPhone(rawPhone);
 
-    // 6. Build WATI template parameters
+    // 5. Build WATI template parameters
     //    Template variable: {{order_number}}
     const templateParams = [
       {
         name:  "order_number",
-        value: String(fulfillment.order_id),
+        value: String(fulfillmentOrder.order_id),
       },
     ];
 
-    // 7. Send WhatsApp template
+    // 6. Send WhatsApp template
     const watiResponse = await sendWatiTemplate(phone, templateParams);
-    console.log(`✓ WhatsApp sent to ${phone} for order ${fulfillment.order_id}`, watiResponse);
+    console.log(`✓ WhatsApp sent to ${phone} for order ${fulfillmentOrder.order_id}`, watiResponse);
 
   } catch (err) {
     console.error("Error processing fulfillment webhook:", err.message);
