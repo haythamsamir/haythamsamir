@@ -75,6 +75,22 @@ async function fetchFulfillmentOrder(fulfillmentOrderId) {
   return data.fulfillment_order;
 }
 
+async function fetchOrderNumber(orderId) {
+  const url = `https://${CONFIG.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/orders/${orderId}.json`;
+  const res = await fetch(url, {
+    headers: {
+      "X-Shopify-Access-Token": CONFIG.SHOPIFY_API_TOKEN,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Shopify API error ${res.status}: ${errText}`);
+  }
+  const data = await res.json();
+  return data.order?.order_number || orderId;
+}
+
 async function sendWatiTemplate(phone, templateParams) {
   const url = `${CONFIG.WATI_API_ENDPOINT}/api/v1/sendTemplateMessage?whatsappNumber=${phone}`;
 
@@ -164,18 +180,21 @@ app.post("/webhook/fulfillment", async (req, res) => {
 
     const phone = formatEgyptianPhone(rawPhone);
 
-    // 6. Build WATI template parameters
+    // 6. Fetch real order number (e.g. 1234 not the internal ID)
+    const orderNumber = await fetchOrderNumber(fulfillmentOrder.order_id);
+
+    // 7. Build WATI template parameters
     //    Template variable: {{order_number}}
     const templateParams = [
       {
         name:  "order_number",
-        value: String(fulfillmentOrder.order_id),
+        value: String(orderNumber),
       },
     ];
 
-    // 7. Send WhatsApp template
+    // 8. Send WhatsApp template
     const watiResponse = await sendWatiTemplate(phone, templateParams);
-    console.log(`✓ WhatsApp sent to ${phone} for order ${fulfillmentOrder.order_id}`, watiResponse);
+    console.log(`✓ WhatsApp sent to ${phone} for order #${orderNumber}`, watiResponse);
 
   } catch (err) {
     console.error("Error processing fulfillment webhook:", err.message);
