@@ -101,6 +101,7 @@ app.post("/webhook/fulfillment", async (req, res) => {
 
   // Acknowledge immediately so Shopify doesn't retry
   res.status(200).send("ok");
+console.log("BODY:", JSON.stringify(req.body, null, 2));
 
   const fulfillmentOrder = req.body;
 
