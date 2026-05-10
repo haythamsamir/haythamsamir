@@ -1,5 +1,5 @@
 // server.js — Shopify → WATI WhatsApp integration
-// Trigger: Fulfillment order transitioned to "On hold" status
+// Trigger: Fulfillment hold added to a fulfillment order
 // Deploy on: Railway / Render / any Node host
 // Node >= 18
 
@@ -11,6 +11,8 @@ const app = express();
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const CONFIG = {
   SHOPIFY_WEBHOOK_SECRET: process.env.SHOPIFY_WEBHOOK_SECRET,
+  SHOPIFY_SHOP_DOMAIN:    process.env.SHOPIFY_SHOP_DOMAIN,
+  SHOPIFY_API_TOKEN:      process.env.SHOPIFY_API_TOKEN,
   WATI_API_ENDPOINT:      process.env.WATI_API_ENDPOINT,
   WATI_API_TOKEN:         process.env.WATI_API_TOKEN,
   WATI_TEMPLATE_NAME:     process.env.WATI_TEMPLATE_NAME,
@@ -47,6 +49,30 @@ function formatEgyptianPhone(raw) {
   if (phone.startsWith("20")) phone = phone.slice(2);
   if (phone.startsWith("0")) phone = phone.slice(1);
   return `20${phone}`;
+}
+
+// Extract numeric ID from Shopify GID
+// e.g. "gid://shopify/FulfillmentOrder/8185543819312" → "8185543819312"
+function extractNumericId(gid) {
+  if (!gid) return null;
+  const parts = gid.split("/");
+  return parts[parts.length - 1];
+}
+
+async function fetchFulfillmentOrder(fulfillmentOrderId) {
+  const url = `https://${CONFIG.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/fulfillment_orders/${fulfillmentOrderId}.json`;
+  const res = await fetch(url, {
+    headers: {
+      "X-Shopify-Access-Token": CONFIG.SHOPIFY_API_TOKEN,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Shopify API error ${res.status}: ${errText}`);
+  }
+  const data = await res.json();
+  return data.fulfillment_order;
 }
 
 async function sendWatiTemplate(phone, templateParams) {
@@ -88,7 +114,7 @@ app.use(
 //
 // Register this webhook in Shopify:
 //   Admin → Settings → Notifications → Webhooks → Create webhook
-//   Event:  Fulfillment order transitioned to the "On hold" status
+//   Event:  Fulfillment hold added to a fulfillment order
 //   Format: JSON
 //   URL:    https://haythamsamir-production.up.railway.app/webhook/fulfillment
 
@@ -101,21 +127,34 @@ app.post("/webhook/fulfillment", async (req, res) => {
 
   // Acknowledge immediately so Shopify doesn't retry
   res.status(200).send("ok");
-console.log("BODY:", JSON.stringify(req.body, null, 2));
 
-  const fulfillmentOrder = req.body;
+  const body = req.body;
 
   try {
-    // 2. Get destination (shipping address)
-    const destination = fulfillmentOrder.destination || null;
+    // 2. Get fulfillment order GID and extract numeric ID
+    const gid = body?.fulfillment_order?.id;
+    const fulfillmentOrderId = extractNumericId(gid);
 
-    // 3. Check Governorate (Province field)
+    if (!fulfillmentOrderId) {
+      console.warn("No fulfillment order ID found in webhook body");
+      return;
+    }
+
+    console.log(`Processing fulfillment order: ${fulfillmentOrderId}`);
+
+    // 3. Fetch full fulfillment order details from Shopify API
+    const fulfillmentOrder = await fetchFulfillmentOrder(fulfillmentOrderId);
+    const destination = fulfillmentOrder?.destination || null;
+
+    console.log(`Destination province: ${destination?.province}`);
+
+    // 4. Check Governorate (Province field)
     if (!isAllowedProvince(destination)) {
       console.log(`Skipping — province "${destination?.province}" not in allowed list`);
       return;
     }
 
-    // 4. Get customer phone
+    // 5. Get customer phone
     const rawPhone = destination?.phone || null;
 
     if (!rawPhone) {
@@ -125,7 +164,7 @@ console.log("BODY:", JSON.stringify(req.body, null, 2));
 
     const phone = formatEgyptianPhone(rawPhone);
 
-    // 5. Build WATI template parameters
+    // 6. Build WATI template parameters
     //    Template variable: {{order_number}}
     const templateParams = [
       {
@@ -134,7 +173,7 @@ console.log("BODY:", JSON.stringify(req.body, null, 2));
       },
     ];
 
-    // 6. Send WhatsApp template
+    // 7. Send WhatsApp template
     const watiResponse = await sendWatiTemplate(phone, templateParams);
     console.log(`✓ WhatsApp sent to ${phone} for order ${fulfillmentOrder.order_id}`, watiResponse);
 
