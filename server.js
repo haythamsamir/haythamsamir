@@ -85,11 +85,10 @@ app.use(
 
 // ─── WEBHOOK ENDPOINT ─────────────────────────────────────────────────────────
 //
-// Register this URL in Shopify:
-//   Admin → Settings → Notifications → Webhooks → Create webhook
-//   Event:  Fulfillment update  (fulfillments/update)
-//   Format: JSON
-//   URL:    https://your-server.com/webhook/fulfillment
+// Register TWO webhooks in Shopify pointing to this same URL:
+//   1. Fulfillment creation  (fulfillments/create)
+//   2. Fulfillment update    (fulfillments/update)
+//   URL: https://haythamsamir-production.up.railway.app/webhook/fulfillment
 
 app.post("/webhook/fulfillment", async (req, res) => {
   // 1. Validate HMAC
@@ -104,10 +103,10 @@ app.post("/webhook/fulfillment", async (req, res) => {
   const fulfillment = req.body;
 
   try {
-    // 2. Check fulfillment status — "open" = in progress
+    // 2. Check fulfillment status
     const status = (fulfillment.status || "").toLowerCase();
-    if (status !== "open") {
-      console.log(`Skipping — status is "${status}", not "open" (in progress)`);
+    if (!["open", "success", "pending"].includes(status)) {
+      console.log(`Skipping — status is "${status}"`);
       return;
     }
 
