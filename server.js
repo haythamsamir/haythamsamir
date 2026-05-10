@@ -136,10 +136,10 @@ app.post("/webhook/fulfillment", async (req, res) => {
     const phone = formatEgyptianPhone(rawPhone);
 
     // 6. Build WATI template parameters
-    //    Template has one variable only: {{1}} = order number
+    //    Template variable: {{order_number}}
     const templateParams = [
       {
-        name:  "1",
+        name:  "order_number",
         value: String(fulfillment.order_id),
       },
     ];
